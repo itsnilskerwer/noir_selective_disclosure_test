@@ -1,21 +1,32 @@
+Work in progress. Not production-ready.
 
 ## The proof
 
-In-circuit:
-```noir
-issuer_pubkey_x: pub [u8; 32],
-    issuer_pubkey_y: pub [u8; 32],
-    disclosed_terms: pub [Field; K],
-    disclosed_positions: pub [[Field; 2]; K]
-```
+This directory is a small Noir proof-of-concept for selective disclosure over a signed, fixed-size dataset of hashed 5-tuples.
 
-Note: Barretenberg flattens these into a fixed ordering, and the verifier expects exactly the same order and indexing when reconstructing the public input field vector (check quote). If disclosed_terms is permuted, disclosed_positions has to be permuted in the same way. In other words, Prover and Verifier must agree on the exact ordering used when the witness was generated and when the proof is verified.(check quote)
 
-```noir
-root: Field,
-    signature: [u8; 64],
-    sorted_quads: [[Field; 5]; N]
-```
+The circuit in `src/main.nr` is fixed to:
+
+- `N = 4` private dataset rows
+- `K = 3` disclosed term hashes
+- tuple width `5`
+- a hardcoded 2-level binary Merkle tree
+
+Private witness inputs:
+
+- `sorted_quads: [[Field; 5]; 4]`
+- `root: Field`
+- `signature: [u8; 64]`
+
+Public inputs:
+
+- `pub_key_x: [u8; 32]`
+- `pub_key_y: [u8; 32]`
+- `disclosed_terms: [Field; 3]`
+- `disclosed_positions: [[Field; 2]; 3]`
+
+
+Main insight: Barretenberg flattens these into a fixed ordering, and the verifier expects exactly the same order and indexing when reconstructing the public input field vector (check quote). If disclosed_terms is permuted, disclosed_positions has to be permuted in the same way. In other words, Prover and Verifier must agree on the exact ordering used when the witness was generated and when the proof is verified.(check quote)
 
 ### Assertions:
 
@@ -27,6 +38,23 @@ Bind each disclosed_terms[k] to a specific (quad_index, pos_index). Note: This i
 
 Re-hash all quads to leaves, recompute root, and assert that it equals root.
 
+What the proof establishes:
+
+1. the issuer public key verifies a secp256k1 ECDSA signature over the private `root`
+2. each public `disclosed_terms[k]` matches `sorted_quads[quad_index][pos_index]`
+3. the private `sorted_quads` hash to leaves whose Merkle root equals the signed `root`
+
+In other words, the verifier learns that the disclosed term hashes occur at the claimed coordinates inside some issuer-signed dataset committed by the private Merkle root.
+
+## Example witness in `Prover.toml`
+
+The checked example uses:
+
+- `4` private 5-tuples in `sorted_quads`
+- `3` disclosed term hashes
+- disclosed coordinates `[0, 0]`, `[0, 1]`, and `[1, 1]`
+
+Those coordinates mean the public statement is not just "these term hashes were signed", but specifically "these term hashes appear at these exact row/column positions in the signed sorted dataset".
 
 ## How to run
  bb prove -b ./target/noir_selective_disclosure_test.json -w ./target/noir_selective_disclosure_test.gz --write_vk -o ./target/proof --output_format bytes_and_fields
@@ -35,13 +63,8 @@ AND
 
 ## Finding
 
-As we are proving membership to a signed root in-circuit, we need the index of the triple in said signed root (Merkle tree roots are order-sensitive).
-
-If the Prover passes them in a different order than sorted, we need to include a mapping from sorted to unsorted indexing.
-If the verifier passes a different order of ---- fails
-
-This means, that the public inputs [disclosed_terms[K], disclosed_positions[K][quad_idx, pos_idx]] leak ordering information regarding the signed Merkle tree root. Unlinkability cannot be guaranteed(???). 
-=> Solution: Treat publicly disclosed RDF terms as unordered multisets to preserve unlinkability???
+As we are proving membership to a signed root in-circuit, we want to know the index of the triple in said signed root (Merkle tree roots are order-sensitive).
+The public inputs [disclosed_terms[K], disclosed_positions[K][quad_idx, pos_idx]] leak ordering information regarding the signed Merkle tree root. Unlinkability cannot be guaranteed. 
 
 ### Test case: Prover-side reordering
 
@@ -49,7 +72,7 @@ if the prover builds the witness with one order of disclosed_terms, but the veri
 
 If only quad indices are re-ordered and position indices are kept the same, verification still fails; the order is part of the statement being proven.
 
-### Possible solutions:
+### Possible solution ideas:
 
 A. Inside the circuit, prove there exists some leaf whose coordinate at position_id equals disclosed_term, using a private Merkle path inclusion proof and a private index. This reduces public inputs to disclosed_terms and corresponding position_id. 
 
